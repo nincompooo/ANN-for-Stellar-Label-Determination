@@ -22,7 +22,7 @@ R_sun = 6.957e10  # cm
 # =========================
 # LOAD DATA
 # =========================
-dataset = pd.read_csv("noisy_stellar_dataset.csv")
+dataset = pd.read_csv("clean_stellar_dataset.csv")
 
 X = dataset.filter(like="flux_").values
 
@@ -50,36 +50,27 @@ X_train, X_test, y_train, y_test = train_test_split(
 # PHYSICS LOSS
 # =========================
 
-def variance_penalty(y_pred, y_true):
-    pred_std = tf.math.reduce_std(y_pred, axis=0)
-    true_std = tf.math.reduce_std(y_true, axis=0)
-    return tf.reduce_mean(tf.square(pred_std - true_std))
-
-
 def physics_loss(y_true, y_pred):
 
     p_teff, s_teff = y_pred[:, 0], y_pred[:, 1]
     p_logg, s_logg = y_pred[:, 2], y_pred[:, 3]
-    p_rad, s_rad   = y_pred[:, 4], y_pred[:, 5]
+    p_rad,  s_rad  = y_pred[:, 4], y_pred[:, 5]
 
     mse = tf.reduce_mean(tf.square(y_true - y_pred))
 
     penalty = 0.0
 
-    penalty += tf.reduce_mean(tf.nn.relu(3000.0 - p_teff))
-    penalty += tf.reduce_mean(tf.nn.relu(p_teff - 7000.0))
+    # Only prevent NONSENSE, not shape distributions
+    penalty += tf.reduce_mean(tf.nn.relu(2500.0 - p_teff))
+    penalty += tf.reduce_mean(tf.nn.relu(2500.0 - s_teff))
 
-    penalty += tf.reduce_mean(tf.nn.relu(3000.0 - s_teff))
-    penalty += tf.reduce_mean(tf.nn.relu(s_teff - p_teff))
+    penalty += tf.reduce_mean(tf.nn.relu(0.0 - p_rad))
+    penalty += tf.reduce_mean(tf.nn.relu(0.0 - s_rad))
 
-    for g in [p_logg, s_logg]:
-        penalty += tf.reduce_mean(tf.nn.relu(3.5 - g))  # only prevent nonsense
+    penalty += tf.reduce_mean(tf.nn.relu(3.0 - p_logg))
+    penalty += tf.reduce_mean(tf.nn.relu(3.0 - s_logg))
 
-
-    penalty += tf.reduce_mean(tf.nn.relu(-p_rad))
-    penalty += tf.reduce_mean(tf.nn.relu(-s_rad))
-
-    return mse + 1.0*penalty + 0.3*variance_penalty(y_pred, y_true)
+    return mse + 0.2 * penalty
 
 
 # =========================
@@ -88,23 +79,18 @@ def physics_loss(y_true, y_pred):
 def build_model(n_features, n_outputs):
     model = models.Sequential([
         layers.Input(shape=(n_features,)),
-        layers.Dense(512, activation="relu"),
-        layers.Dropout(0.2),
-
-        layers.Dense(256, activation="relu"),
-        layers.Dropout(0.2),
-
-        layers.Dense(128, activation="relu"),
-
+        layers.Dense(10, activation="relu"),
+        layers.Dense(10, activation="relu"),
         layers.Dense(n_outputs)
     ])
 
     model.compile(
-        optimizer=Adam(1e-4),
+        optimizer=Adam(1e-3),  # IMPORTANT: higher LR for small nets
         loss=physics_loss,
         metrics=["mae"]
     )
     return model
+
 
 model = build_model(X_train.shape[1], y_train.shape[1])
 
@@ -278,41 +264,6 @@ print("True std:", y_true[:,3].std())
 # =========================
 # SAVE MODEL
 # =========================
-# model.save("stellar_model.keras")
 
 model.save(os.path.join(base_dir, "stellar_model.keras"))
 joblib.dump(scaler_X, os.path.join(base_dir, "scaler_X.pkl"))
-# joblib.dump(scaler_y, os.path.join(base_dir, "scaler_y.pkl"))
-
-# later we can run:
-# model = tf.keras.models.load_model("ann_results/stellar_model.keras",
-#                                    custom_objects={"loss": weighted_physics_loss(loss_weights)})
-
-
-# =========================
-# CROSS-VALIDATION
-# =========================
-# kf = KFold(n_splits=5, shuffle=True, random_state=42)
-# mae_scores, r2_scores = [], []
-
-# for fold, (tr, va) in enumerate(kf.split(X_scaled)):
-#     model_cv = build_model(X_train.shape[1], y_train.shape[1])
-#     model_cv.fit(X_scaled[tr], y_scaled[tr], epochs=20, batch_size=32, verbose=0)
-
-#     y_cv = scaler_y.inverse_transform(model_cv.predict(X_scaled[va]))
-#     y_cv = clip_to_physical(y_cv)
-#     y_true_cv = scaler_y.inverse_transform(y_scaled[va])
-
-#     mae_scores.append(mean_absolute_error(y_true_cv, y_cv))
-#     r2_scores.append(r2_score(y_true_cv, y_cv))
-
-# print("\nCross-Validation:")
-# print(f"MAE = {np.mean(mae_scores):.3f} ± {np.std(mae_scores):.3f}")
-# print(f"R²  = {np.mean(r2_scores):.3f} ± {np.std(r2_scores):.3f}")
-
-# pd.DataFrame({
-#     "Fold": range(1, 6),
-#     "MAE": mae_scores,
-#     "R2": r2_scores
-# }).to_csv("cross_validation_results.csv", index=False)
-

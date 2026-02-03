@@ -9,7 +9,15 @@ def create_dataset_from_dir(data_dir):
             continue
 
         # spec_{p_teff}_{s_teff}_{p_logg}_{s_logg}_{p_radius}_{s_radius}.txt
-        parts = fname.replace(".txt", "").split("_")
+        #filename_base = (
+        # filename_base = (
+        #     f"spec_{int(p['Teff'])}_{int(s['Teff'])}_"
+        #     f"{round(float(p['gravity']), 2):.2f}_{round(float(s['gravity']), 2):.2f}_"
+        #     f"{round(p['radius'], 3)}_{round(s['radius'], 3)}"
+        # )
+
+
+        parts = fname.replace("_clean.txt", "").split("_")
         if len(parts) != 7:
             print(f"Skipping malformed filename: {fname}")
             continue
@@ -26,7 +34,7 @@ def create_dataset_from_dir(data_dir):
 
         filepath = os.path.join(data_dir, fname)
 
-        df = pd.read_csv(filepath, sep=r"\s+", header=None, engine="python")
+        df = pd.read_csv(filepath, sep=r"\s+", comment="#", header=None, engine="python")
         df.columns = ["wv", "flux_p", "flux_s", "flux_combined"]
 
         flux_combined = df["flux_combined"].values
@@ -41,23 +49,23 @@ def create_dataset_from_dir(data_dir):
 
 
 # Paths for clean and noisy data
-clean_dir = "/data/niaycarr/clean1_spectrum" 
-noisy_dir = "/data/niaycarr/noisy1_spectrum" 
+clean_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/clean_spectrum"
+
 # clean_data_dir = "/data/niaycarr/data/spectrum"
 # noisy_data_dir = "/data/niaycarr/data/noisy_spectrum"
 
 # Create datasets
+# clean_dataset = create_dataset_from_dir(clean_dir)
 clean_dataset = create_dataset_from_dir(clean_dir)
-noisy_dataset = create_dataset_from_dir(noisy_dir)
 
 # Save datasets to CSV
+# clean_dataset.to_csv("clean_stellar_dataset.csv", index=False)
 clean_dataset.to_csv("clean_stellar_dataset.csv", index=False)
-noisy_dataset.to_csv("noisy_stellar_dataset.csv", index=False)
+
+# print(f"Saved clean dataset with shape: {clean_dataset.shape}")
+# print(clean_dataset.head(1).T)
 
 print(f"Saved clean dataset with shape: {clean_dataset.shape}")
 print(clean_dataset.head(1).T)
-
-print(f"Saved noisy dataset with shape: {noisy_dataset.shape}")
-print(noisy_dataset.head(1).T)
 
 
