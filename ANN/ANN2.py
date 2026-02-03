@@ -30,7 +30,7 @@ cols = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
 y = dataset[cols].values.astype(np.float32)
 
 # ---- convert radii to solar units ----
-y[:, 4:6] /= R_sun
+y[:, 4:6] /= R_sun 
 
 # =========================
 # SCALE INPUTS ONLY
@@ -122,8 +122,8 @@ history = model.fit(
 y_pred = model.predict(X_test)
 
 # convert radii back to cm for output
-y_pred[:, 4:6] *= R_sun
-y_test[:, 4:6] *= R_sun
+# y_pred[:, 4:6] *= R_sun
+# y_test[:, 4:6] *= R_sun
 
 label_names = cols
 
