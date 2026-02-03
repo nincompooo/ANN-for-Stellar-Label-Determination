@@ -216,7 +216,7 @@ class VolgaInterpolator(Volga):
             size=interp_flux.shape
         )
 
-        noisy_flux = interp_flux * (1 + noise)
+        noisy_flux = interp_flux #+ noise #generate CLEAN data only
 
         return koi_wave, interp_flux, noisy_flux, koi_err
 
