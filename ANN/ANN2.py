@@ -1,148 +1,214 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import joblib
-import tensorflow as tf
-from tensorflow.keras import layers, models
-from tensorflow.keras.optimizers import Adam
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import joblib
 
-# =========================
-# SETUP
-# =========================
+# ========== PATHS ==========
 base_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/ANN"
-os.makedirs(base_dir, exist_ok=True)
-output_dir = "results"
+output_dir = os.path.join(base_dir, "results")
 os.makedirs(output_dir, exist_ok=True)
 
-R_sun = 6.957e10  # cm
+csv_path = "noisy_stellar_dataset.csv"
+wavelength_file = "Koi1422_HET.txt"  # for wavelength grid reference, optional
 
-# =========================
-# LOAD DATA
-# =========================
-dataset = pd.read_csv("noisy_stellar_dataset.csv")
+# ========== LABELS ==========
+# We'll transform radius columns to log space for training
+label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius_log", "s_radius_log"]
 
-X = dataset.filter(like="flux_").values
+# ========== 1. LOAD DATA ==========
+df = pd.read_csv(csv_path)
+flux_cols = [c for c in df.columns if c.startswith("flux_")]
 
-cols = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
-y = dataset[cols].values.astype(np.float32)
+epsilon = 1e-5
+# Create log radius columns to stabilize training
+df["p_radius_log"] = np.log(df["p_radius"] + epsilon)
+df["s_radius_log"] = np.log(df["s_radius"] + epsilon)
 
-# ---- convert radii to solar units ----
-y[:, 4:6] /= R_sun
+def undo_log_radii(arr, label_names, epsilon):
+    arr = arr.copy()
+    pr = label_names.index("p_radius_log")
+    sr = label_names.index("s_radius_log")
+    arr[:, pr] = np.exp(arr[:, pr]) - epsilon
+    arr[:, sr] = np.exp(arr[:, sr]) - epsilon
+    return arr
 
-# =========================
-# SCALE INPUTS ONLY
-# =========================
-scaler_X = StandardScaler()
-X_scaled = scaler_X.fit_transform(X)
-joblib.dump(scaler_X, os.path.join(base_dir, "scaler_X.pkl"))
+# Load wavelength for info (not used in training)
+wavelength = np.loadtxt(wavelength_file)[:, 0]
+assert len(flux_cols) == len(wavelength), "Flux columns != wavelength bins"
 
-# =========================
-# TRAIN TEST SPLIT
-# =========================
+# ========== 2. BUILD INPUTS & TARGETS ==========
+X = df[flux_cols].values
+y = df[label_names].values
+
+# ========== 3. NORMALIZATION FUNCTION ==========
+def normalize_synthetic(flux_primary, flux_secondary):
+    """
+    Normalize both primary and secondary flux by median of primary flux
+    This keeps relative brightness ratios intact.
+    """
+    norm = np.median(flux_primary)
+    return flux_primary / norm, flux_secondary / norm
+
+# Normalize each combined flux row by its median (simulate primary star normalization)
+X = X / np.median(X, axis=1, keepdims=True)
+
+# ========== 4. SCALE DATA ==========
+x_scaler = StandardScaler()
+y_scaler = StandardScaler()
+
+X_scaled = x_scaler.fit_transform(X)
+y_scaled = y_scaler.fit_transform(y)
+
+# ========== 5. TRAIN/TEST SPLIT ==========
 X_train, X_test, y_train, y_test = train_test_split(
-    X_scaled, y, test_size=0.2, random_state=42
+    X_scaled, y_scaled, test_size=0.2, random_state=42
 )
 
-# =========================
-# PHYSICS LOSS
-# =========================
+# ========== 6. DATASET CLASS ==========
+class StellarDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.float32)
 
-def variance_penalty(y_pred, y_true):
-    pred_std = tf.math.reduce_std(y_pred, axis=0)
-    true_std = tf.math.reduce_std(y_true, axis=0)
-    return tf.reduce_mean(tf.square(pred_std - true_std))
+    def __len__(self):
+        return len(self.X)
 
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
-def physics_loss(y_true, y_pred):
+train_loader = DataLoader(StellarDataset(X_train, y_train), batch_size=128, shuffle=True)
+test_loader = DataLoader(StellarDataset(X_test, y_test), batch_size=128)
 
-    p_teff, s_teff = y_pred[:, 0], y_pred[:, 1]
-    p_logg, s_logg = y_pred[:, 2], y_pred[:, 3]
-    p_rad, s_rad   = y_pred[:, 4], y_pred[:, 5]
+# ========== 7. MODEL ==========
+class StellarANN(nn.Module):
+    def __init__(self, n_input, n_output):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_input, 2048),
+            nn.ReLU(),
+            nn.BatchNorm1d(2048),
+            nn.Dropout(0.3),
 
-    mse = tf.reduce_mean(tf.square(y_true - y_pred))
+            nn.Linear(2048, 1024),
+            nn.ReLU(),
+            nn.BatchNorm1d(1024),
+            nn.Dropout(0.3),
 
-    penalty = 0.0
+            nn.Linear(1024, 512),
+            nn.ReLU(),
 
-    penalty += tf.reduce_mean(tf.nn.relu(3000.0 - p_teff))
-    penalty += tf.reduce_mean(tf.nn.relu(p_teff - 7000.0))
+            nn.Linear(512, 128),
+            nn.ReLU(),
 
-    penalty += tf.reduce_mean(tf.nn.relu(3000.0 - s_teff))
-    penalty += tf.reduce_mean(tf.nn.relu(s_teff - p_teff))
+            nn.Linear(128, n_output)
+        )
 
-    for g in [p_logg, s_logg]:
-        penalty += tf.reduce_mean(tf.nn.relu(3.5 - g))  # only prevent nonsense
+    def forward(self, x):
+        return self.net(x)
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = StellarANN(len(flux_cols), len(label_names)).to(device)
 
-    penalty += tf.reduce_mean(tf.nn.relu(-p_rad))
-    penalty += tf.reduce_mean(tf.nn.relu(-s_rad))
+# ========== 8. TRAINING SETUP ==========
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    return mse + 1.0*penalty + 0.3*variance_penalty(y_pred, y_true)
+# ========== 9. TRAINING LOOP WITH EARLY STOPPING ==========
+best_val = float("inf")
+patience = 15
+counter = 0
+max_epochs = 20
 
+for epoch in range(max_epochs):
+    model.train()
+    train_loss = 0
+    for xb, yb in train_loader:
+        xb, yb = xb.to(device), yb.to(device)
 
-# =========================
-# MODEL
-# =========================
-def build_model(n_features, n_outputs):
-    model = models.Sequential([
-        layers.Input(shape=(n_features,)),
-        layers.Dense(512, activation="relu"),
-        layers.Dropout(0.2),
+        pred = model(xb)
+        loss = criterion(pred, yb)
 
-        layers.Dense(256, activation="relu"),
-        layers.Dropout(0.2),
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-        layers.Dense(128, activation="relu"),
+        train_loss += loss.item()
+    train_loss /= len(train_loader)
 
-        layers.Dense(n_outputs)
-    ])
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for xb, yb in test_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            val_loss += criterion(model(xb), yb).item()
+    val_loss /= len(test_loader)
 
-    model.compile(
-        optimizer=Adam(1e-4),
-        loss=physics_loss,
-        metrics=["mae"]
-    )
-    return model
+    print(f"Epoch {epoch:3d} | Train {train_loss:.4f} | Val {val_loss:.4f}")
 
-model = build_model(X_train.shape[1], y_train.shape[1])
+    if val_loss < best_val:
+        best_val = val_loss
+        counter = 0
+        torch.save(model.state_dict(), os.path.join(base_dir, "stellar_ann_model.pt"))
+        joblib.dump(x_scaler, os.path.join(base_dir, "x_scaler.save"))
+        joblib.dump(y_scaler, os.path.join(base_dir, "y_scaler.save"))
+        print("New best model saved")
+    else:
+        counter += 1
+        print(f"No improvement ({counter}/{patience})")
+        if counter >= patience:
+            print("Early stopping triggered")
+            break
 
-history = model.fit(
-    X_train, y_train,
-    validation_split=0.1,
-    epochs=60,
-    batch_size=32,
-    verbose=1
-)
+# ========== 10. LOAD BEST MODEL FOR PREDICTION ==========
+model.load_state_dict(torch.load(os.path.join(base_dir, "stellar_ann_model.pt")))
+model.eval()
+x_scaler = joblib.load(os.path.join(base_dir, "x_scaler.save"))
+y_scaler = joblib.load(os.path.join(base_dir, "y_scaler.save"))
 
-# =========================
-# PREDICTION
-# =========================
-y_pred = model.predict(X_test)
+# ========== 11. PREDICTIONS ON TEST SET ==========
+with torch.no_grad():
+    y_pred_scaled = model(torch.tensor(X_test, dtype=torch.float32).to(device)).cpu().numpy()
 
-# convert radii back to cm for output
-y_pred[:, 4:6] *= R_sun
-y_test[:, 4:6] *= R_sun
+y_pred = y_scaler.inverse_transform(y_pred_scaled)
+y_true = y_scaler.inverse_transform(y_test)
 
-label_names = cols
+# Optionally convert radius logs back to linear for metrics or keep log-space
+y_pred_lin = undo_log_radii(y_pred, label_names, epsilon)
+y_true_lin = undo_log_radii(y_true, label_names, epsilon)
 
-results_df = pd.DataFrame(y_pred, columns=[f"pred_{n}" for n in label_names])
-results_df.to_csv(os.path.join(base_dir, "test_predictions.csv"), index=False)
-
-model.save(os.path.join(base_dir, "stellar_model.keras"))
-
-
-# =========================
-# METRICS
-# =========================
-#2/2/26
-label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
-
-y_true = y_test.copy()   # ground truth
+# ========== 12. METRICS ==========
 errors = y_pred - y_true
 abs_errors = np.abs(errors)
 
+print("\nMean Absolute Error per parameter (log-radius):")
+for name, mae in zip(label_names, abs_errors.mean(axis=0)):
+    print(f"{name:10s}: {mae:.4f}")
+
+rel_errors = abs_errors / np.abs(y_true)
+print("\nMedian Relative Errors (log-radius):")
+for name, re in zip(label_names, np.median(rel_errors, axis=0)):
+    print(f"{name:10s}: {re*100:.2f}%")
+
+# If you want metrics in linear radius units, do this:
+errors_lin = y_pred_lin - y_true_lin
+abs_errors_lin = np.abs(errors_lin)
+
+print("\nMean Absolute Error per parameter (linear radius):")
+for name, mae in zip(label_names, abs_errors_lin.mean(axis=0)):
+    print(f"{name:10s}: {mae:.4f}")
+
+rel_errors_lin = abs_errors_lin / np.abs(y_true_lin)
+print("\nMedian Relative Errors (linear radius):")
+for name, re in zip(label_names, np.median(rel_errors_lin, axis=0)):
+    print(f"{name:10s}: {re*100:.2f}%")
+
+# ========== 13. SAVE PREDICTIONS TABLE ==========
 pred_df = pd.DataFrame(y_pred, columns=[f"pred_{n}" for n in label_names])
 true_df = pd.DataFrame(y_true, columns=[f"true_{n}" for n in label_names])
 err_df  = pd.DataFrame(errors, columns=[f"err_{n}" for n in label_names])
@@ -150,169 +216,62 @@ err_df  = pd.DataFrame(errors, columns=[f"err_{n}" for n in label_names])
 results_df = pd.concat([true_df, pred_df, err_df], axis=1)
 results_df.to_csv(os.path.join(base_dir, "test_predictions.csv"), index=False)
 
-
-# error distributions
-for i, name in enumerate(label_names):
-    plt.figure(figsize=(6,4))
-    plt.hist(errors[:, i], bins=50, alpha=0.7)
-    plt.axvline(0, color="k", linestyle="--", alpha=0.7)
-    plt.xlabel(f"Prediction Error ({name})")
-    plt.ylabel("Count")
-    plt.title(f"Error Distribution: {name}")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"error_dist_{name}.png"))
-    plt.show()
-
-# MAE labels
-mae_per_label = abs_errors.mean(axis=0)
-
-plt.figure(figsize=(7,5))
-plt.bar(label_names, mae_per_label)
-plt.ylabel("MAE")
-plt.title("MAE per Stellar Label")
-plt.xticks(rotation=45)
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(os.path.join(output_dir, "mae_per_label.png"))
-plt.show()
-
-for name, val in zip(label_names, mae_per_label):
-    print(f"{name} MAE = {val:.3f}")
-
-# predicted vs true
+# ========== 14. PLOTTING ==========
 for i, name in enumerate(label_names):
     plt.figure(figsize=(5,5))
     plt.scatter(y_true[:, i], y_pred[:, i], s=5, alpha=0.5)
-    
-    minv = min(y_true[:, i].min(), y_pred[:, i].min())
-    maxv = max(y_true[:, i].max(), y_pred[:, i].max())
-    plt.plot([minv, maxv], [minv, maxv], "r--", lw=2)
-
-    plt.xlabel(f"True {name}")
-    plt.ylabel(f"Predicted {name}")
+    plt.plot([y_true[:, i].min(), y_true[:, i].max()],
+             [y_true[:, i].min(), y_true[:, i].max()], 'r--')
+    unit = " (R☉)" if "radius" in name else ""
+    plt.xlabel(f"True {name}{unit}")
+    plt.ylabel(f"Predicted {name}{unit}")
     plt.title(f"Predicted vs True: {name}")
     plt.grid(alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f"pred_vs_true_{name}.png"))
-    plt.show()
+    plt.close()
 
+# ========== 15. INFERENCE ON NEW REAL SPECTRUM ==========
+def predict_stellar_params_from_spectrum(filename, model, x_scaler, y_scaler, epsilon=1e-5):
+    data = np.loadtxt(filename)
+    flux = data[:, 1]
 
-# mae = mean_absolute_error(y_true, y_pred)
-# rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-# r2 = r2_score(y_true, y_pred)
+    flux = flux / np.median(flux)
+    flux = flux.reshape(1, -1)
 
-# print("\nOverall Metrics:")
-# print(f"MAE  = {mae:.3f}")
-# print(f"RMSE = {rmse:.3f}")
-# print(f"R²   = {r2:.3f}")
+    flux_scaled = x_scaler.transform(flux)
 
+    model.eval()
+    with torch.no_grad():
+        pred_scaled = model(torch.tensor(flux_scaled, dtype=torch.float32)).numpy()
 
-mae_per_label = abs_errors.mean(axis=0)
-rmse_per_label = np.sqrt((errors**2).mean(axis=0))
+    pred = y_scaler.inverse_transform(pred_scaled)[0]
 
-metrics_df = pd.DataFrame({
-    "Label": label_names,
-    "MAE": mae_per_label,
-    "RMSE": rmse_per_label
-})
+    # Indexes for log radius
+    p_radius_log_idx = label_names.index("p_radius_log")
+    s_radius_log_idx = label_names.index("s_radius_log")
 
-metrics_df.to_csv(os.path.join(base_dir, "metrics_per_label.csv"), index=False)
+    print("Log p_radius (model output):", pred[p_radius_log_idx])
+    print("Log s_radius (model output):", pred[s_radius_log_idx])
 
-print(metrics_df)
+    # Exponentiate to linear radius
+    p_radius_lin = np.exp(pred[p_radius_log_idx]) - epsilon
+    s_radius_lin = np.exp(pred[s_radius_log_idx]) - epsilon
 
+    # Prepare clean output dict with renamed keys
+    clean_labels = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
 
-#2/2/26
-# =========================
-# OVERFITTING DIAGNOSTIC PLOTS
-# =========================
+    pred_clean = pred.copy()
+    pred_clean[p_radius_log_idx] = p_radius_lin
+    pred_clean[s_radius_log_idx] = s_radius_lin
 
-train_loss = history.history["loss"]
-val_loss   = history.history["val_loss"]
+    result = dict(zip(clean_labels, pred_clean))
 
-train_mae  = history.history["mae"]
-val_mae    = history.history["val_mae"]
+    return result
 
-epochs = np.arange(1, len(train_loss) + 1)
-
-best_epoch = np.argmin(val_loss) + 1
-
-fig, axs = plt.subplots(1, 2, figsize=(12, 5))
-
-# ---- Loss panel ----
-axs[0].plot(epochs, train_loss, label="Train Loss")
-axs[0].plot(epochs, val_loss, label="Validation Loss")
-axs[0].axvline(best_epoch, linestyle="--")
-axs[0].set_xlabel("Epoch")
-axs[0].set_ylabel("MSE Loss")
-axs[0].set_title("Training vs Validation Loss")
-axs[0].legend()
-axs[0].grid(alpha=0.3)
-
-axs[0].annotate(
-    "Best validation loss",
-    xy=(best_epoch, val_loss[best_epoch-1]),
-    xytext=(best_epoch+3, val_loss[best_epoch-1]*1.1),
-    arrowprops=dict(arrowstyle="->")
-)
-
-# ---- MAE panel ----
-axs[1].plot(epochs, train_mae, label="Train MAE")
-axs[1].plot(epochs, val_mae, label="Validation MAE")
-axs[1].axvline(best_epoch, linestyle="--")
-axs[1].set_xlabel("Epoch")
-axs[1].set_ylabel("MAE")
-axs[1].set_title("Training vs Validation MAE")
-axs[1].legend()
-axs[1].grid(alpha=0.3)
-
-plt.tight_layout()
-plt.savefig(os.path.join(output_dir, "overfitting_diagnostic.png"))
-plt.show()
-
-
-print("Pred std:", y_pred[:,3].std())
-print("True std:", y_true[:,3].std())
-
-
-# =========================
-# SAVE MODEL
-# =========================
-# model.save("stellar_model.keras")
-
-model.save(os.path.join(base_dir, "stellar_model.keras"))
-joblib.dump(scaler_X, os.path.join(base_dir, "scaler_X.pkl"))
-# joblib.dump(scaler_y, os.path.join(base_dir, "scaler_y.pkl"))
-
-# later we can run:
-# model = tf.keras.models.load_model("ann_results/stellar_model.keras",
-#                                    custom_objects={"loss": weighted_physics_loss(loss_weights)})
-
-
-# =========================
-# CROSS-VALIDATION
-# =========================
-# kf = KFold(n_splits=5, shuffle=True, random_state=42)
-# mae_scores, r2_scores = [], []
-
-# for fold, (tr, va) in enumerate(kf.split(X_scaled)):
-#     model_cv = build_model(X_train.shape[1], y_train.shape[1])
-#     model_cv.fit(X_scaled[tr], y_scaled[tr], epochs=20, batch_size=32, verbose=0)
-
-#     y_cv = scaler_y.inverse_transform(model_cv.predict(X_scaled[va]))
-#     y_cv = clip_to_physical(y_cv)
-#     y_true_cv = scaler_y.inverse_transform(y_scaled[va])
-
-#     mae_scores.append(mean_absolute_error(y_true_cv, y_cv))
-#     r2_scores.append(r2_score(y_true_cv, y_cv))
-
-# print("\nCross-Validation:")
-# print(f"MAE = {np.mean(mae_scores):.3f} ± {np.std(mae_scores):.3f}")
-# print(f"R²  = {np.mean(r2_scores):.3f} ± {np.std(r2_scores):.3f}")
-
-# pd.DataFrame({
-#     "Fold": range(1, 6),
-#     "MAE": mae_scores,
-#     "R2": r2_scores
-# }).to_csv("cross_validation_results.csv", index=False)
-
+# Example usage:
+new_spectrum_file = "Koi1422_HET.txt"
+predicted_labels = predict_stellar_params_from_spectrum(new_spectrum_file, model, x_scaler, y_scaler)
+print("\nPredicted stellar parameters for new spectrum:")
+for k, v in predicted_labels.items():
+    print(f"{k:10s}: {v:.4f}")
