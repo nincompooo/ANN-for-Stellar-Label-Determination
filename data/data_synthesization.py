@@ -198,30 +198,6 @@ class VolgaInterpolator(Volga):
         interp_func = interp1d(wavelength, flux, bounds_error=False, fill_value=np.nan)
         interp_flux = interp_func(koi_wave)
 
-        #edit 2/2/26 202 - 215
-        snr = 25
-        noise_std = 1.0 / snr  # 0.04
+        #edit remove noise in synthesization step entirely
 
-        # noise = np.random.normal(
-        #     loc=0.0,
-        #     scale=noise_std,
-        #     size=interp_flux.shape
-        # )
-
-        # return koi_wave, interp_flux, noise, koi_err
-
-        noise = np.random.normal(
-            loc=0.0,
-            scale=noise_std,
-            size=interp_flux.shape
-        )
-
-        noisy_flux = interp_flux * (1 + noise)
-
-        return koi_wave, interp_flux, noisy_flux, koi_err
-
-
-        # noise = np.random.uniform(-1, 1, interp_flux.shape) * (1 / 50)
-        # noisy_flux = interp_flux + noise
-        # return koi_wave, interp_flux, noisy_flux, koi_err
-
+        return koi_wave, interp_flux, koi_err

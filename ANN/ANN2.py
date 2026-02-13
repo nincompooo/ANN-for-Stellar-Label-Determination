@@ -14,7 +14,7 @@ base_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/ANN"
 output_dir = os.path.join(base_dir, "results")
 os.makedirs(output_dir, exist_ok=True)
 
-csv_path = "noisy_stellar_dataset.csv"
+csv_path = "clean_stellar_dataset.csv"
 wavelength_file = "Koi1422_HET.txt"  # for wavelength grid reference, optional
 
 # ========== LABELS ==========
@@ -57,6 +57,19 @@ def normalize_synthetic(flux_primary, flux_secondary):
 
 # Normalize each combined flux row by its median (simulate primary star normalization)
 X = X / np.median(X, axis=1, keepdims=True)
+
+def apply_multiplicative_noise(X, snr=100):
+    """
+    Apply multiplicative Gaussian noise assuming constant SNR.
+    F_noisy = F * (1 + N(0, 1/SNR))
+    """
+    sigma = 1.0 / snr
+    noise = np.random.normal(loc=0.0, scale=sigma, size=X.shape)
+    return X * (1.0 + noise)
+
+# Example: SNR=100
+X = apply_multiplicative_noise(X, snr=100)
+
 
 # ========== 4. SCALE DATA ==========
 x_scaler = StandardScaler()

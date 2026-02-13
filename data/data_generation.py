@@ -41,14 +41,14 @@ def plot_spectrum_stages(
     pair_key,
     wv_p, flux_p_broad, flux_p_norm,
     wv_s, flux_s_broad, flux_s_norm,
-    wv_pix, flux_p_noisy, flux_s_noisy,
+    wv_pix, flux_p, flux_s,
     output_dir="spectrum_plots"
 ):
     os.makedirs(output_dir, exist_ok=True)
 
     flux_comb_broad = flux_p_broad + flux_s_broad
     flux_comb_norm  = flux_p_norm  + flux_s_norm
-    flux_comb_noisy = flux_p_noisy + flux_s_noisy
+    flux_comb = flux_p + flux_s
 
     fig, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
     plt.subplots_adjust(hspace=0.1)
@@ -63,13 +63,13 @@ def plot_spectrum_stages(
     axs[1].plot(wv_p, flux_comb_norm, linewidth=2)
     axs[1].set_title("Normalized")
 
-    axs[2].plot(wv_pix, flux_p_noisy, alpha=0.7)
-    axs[2].plot(wv_pix, flux_s_noisy, alpha=0.7)
-    axs[2].plot(wv_pix, flux_comb_noisy, linewidth=2)
-    axs[2].set_title("Pixelized (Noisy)")
+    axs[2].plot(wv_pix, flux_p, alpha=0.7)
+    axs[2].plot(wv_pix, flux_s, alpha=0.7)
+    axs[2].plot(wv_pix, flux_comb, linewidth=2)
+    axs[2].set_title("Pixelized")
     axs[2].set_xlabel("Wavelength [Å]")
 
-    filepath = os.path.join(output_dir, f"{pair_key}_noisy_stages.png")
+    filepath = os.path.join(output_dir, f"{pair_key}_stages.png")
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -100,10 +100,10 @@ def process_binary(pair_key, pair_data, mist_file, base_dir, resolution=30000):
         )
 
         # Step 3: Pixelize
-        wv_p_pix, _, flux_p_noisy, _ = volga.pixelize(
+        wv_p_pix, flux_p, _ = volga.pixelize(
             wv_p, flux_p_norm
         )
-        wv_s_pix, _, flux_s_noisy, _ = volga.pixelize(
+        wv_s_pix, flux_s, _ = volga.pixelize(
             wv_s, flux_s_norm
         )
 
@@ -111,12 +111,12 @@ def process_binary(pair_key, pair_data, mist_file, base_dir, resolution=30000):
             raise ValueError("Pixel wavelength grids do not match")
 
         # Step 4: Combine
-        flux_comb_noisy = flux_p_noisy + flux_s_noisy
-        flux_comb_noisy /= np.median(flux_comb_noisy)
+        flux_comb = flux_p + flux_s
+        flux_comb /= np.median(flux_comb)
 
         # Step 5: Output directories
-        noisy_dir = os.path.join(base_dir, "noisy_spectrum")
-        os.makedirs(noisy_dir, exist_ok=True)
+        clean_dir = os.path.join(base_dir, "clean_spectrum")
+        os.makedirs(clean_dir, exist_ok=True)
 
         # added rounding to the proper decimal not just "cutting" off
         filename_base = (
@@ -127,8 +127,8 @@ def process_binary(pair_key, pair_data, mist_file, base_dir, resolution=30000):
 
 
         np.savetxt(
-            os.path.join(noisy_dir, f"{filename_base}.txt"),
-            np.column_stack((wv_p_pix, flux_p_noisy, flux_s_noisy, flux_comb_noisy)),
+            os.path.join(clean_dir, f"{filename_base}.txt"),
+            np.column_stack((wv_p_pix, flux_p, flux_s, flux_comb)),
             header="Wavelength  Flux_Primary  Flux_Secondary  Flux_Combined"
         )
 
