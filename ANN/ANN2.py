@@ -42,16 +42,33 @@ def undo_log_radii(arr, label_names, epsilon):
 wavelength = np.loadtxt(wavelength_file)[:, 0]
 assert len(flux_cols) == len(wavelength), "Flux columns != wavelength bins"
 
+# === MASKING ADDITION ===
+def build_wavelength_mask(wl):
+    return (
+        (wl <= 0.6860) |
+        ((wl >= 0.6880) & (wl <= 0.7600)) |
+        ((wl >= 0.7660) & (wl <= 0.8210)) |
+        (wl >= 0.8240)
+    )
+
+
+mask = build_wavelength_mask(wavelength)
+print(f"Keeping {mask.sum()} / {len(mask)} wavelength bins")
+
+bad = ~mask
+print("Masked wavelength ranges:")
+edges = np.where(np.diff(bad.astype(int)) != 0)[0]
+for i in edges:
+    print(wavelength[i], wavelength[i+1])
+
 # ========== 2. BUILD INPUTS & TARGETS ==========
-X = df[flux_cols].values
+X_full = df[flux_cols].values
+X = X_full[:, mask]                # APPLY MASK
+flux_cols = np.array(flux_cols)[mask].tolist()
 y = df[label_names].values
 
 # ========== 3. NORMALIZATION FUNCTION ==========
 def normalize_synthetic(flux_primary, flux_secondary):
-    """
-    Normalize both primary and secondary flux by median of primary flux
-    This keeps relative brightness ratios intact.
-    """
     norm = np.median(flux_primary)
     return flux_primary / norm, flux_secondary / norm
 
@@ -244,10 +261,34 @@ for i, name in enumerate(label_names):
     plt.savefig(os.path.join(output_dir, f"pred_vs_true_{name}.png"))
     plt.close()
 
+
+flux_full = df[[c for c in df.columns if c.startswith("flux_")]].iloc[0].values
+mask_full = build_wavelength_mask(wavelength)
+flux_masked = flux_full.copy()
+flux_masked[~mask_full] = np.nan
+
+plt.figure(figsize=(10,4))
+plt.plot(wavelength, flux_full, alpha=0.3, label="Original")
+plt.plot(wavelength, flux_masked, lw=1, label="Masked (with gaps)")
+plt.legend()
+plt.xlabel("Wavelength")
+plt.ylabel("Flux")
+plt.title("Wavelength Mask Check (true gaps)")
+plt.tight_layout()
+plt.savefig(os.path.join(output_dir, "masking_check.png"))
+plt.close()
+
+
 # ========== 15. INFERENCE ON NEW REAL SPECTRUM ==========
 def predict_stellar_params_from_spectrum(filename, model, x_scaler, y_scaler, epsilon=1e-5):
     data = np.loadtxt(filename)
+
+    wl = data[:, 0]
     flux = data[:, 1]
+
+    mask = build_wavelength_mask(wl)
+    flux = flux[mask]
+
 
     flux = flux / np.median(flux)
     flux = flux.reshape(1, -1)
