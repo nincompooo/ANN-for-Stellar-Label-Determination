@@ -1,40 +1,39 @@
 ### Updates explained:
 
-- COMPLETELY REDID the ANN, now incorporates a feature in which automatically stops at the best # of epochs, mostly irrelevant and usually optimaizes at around 20 but it was mostly for me.
-- Redid the appraoch to our ANN
-	- Each spectrum is normalized by its own median flux, matching how the synthetic data was constructed and removes absolute scale so the network focuses on spectral shape.
-    - THE ANN (4 hidden layers, w/ the output layer having 6 neurons (one per label).)
-        - Hidden layers: progressively compress and reshape information, extracting nonlinear spectral features.
-        - ReLU: adds non‑linearity (so the model can learn complex relationships).
-        - BatchNorm: stabilizes training by normalizing activations layer‑wise.
-        - Dropout: prevents overfitting by randomly dropping neurons.
-    - training loop to minimize mean squared error
-    - 
+- Remade a CLEAN dataset by removing our noise injection in our generation stage and moving it into our ANN stage
+    - This allows us to finetune the amount of noise our dataset has and it's impact on improving the accuracy of our ANN
+- Prevously, our problems with the way radius was being returned stemmed from an error in the file parsing stage of turning our dataset into a CSV, negligience on my end and should now be fixed. With this new fix, our MRE goes from 1.51% and 2.46% to 0.07% to 0.09% (primary and secondary respectively) giving us an avg improvement of 24.45%
+- Also, I added a side by side comparison of KOI 1422's truth values vs predicted values, as well as their error. For radius, note that there is a difference in units which I'm lwk not gonna fix/convert until later.
 
 ### TO DO NEXT
 
-- honestly, our raidus is a bit wonky but that's very clearly because it's not consistent. I still have to go back and fix that, but that's a later problem.
+- I'll be uploading the ANN's implementation on masking next, the code is done but I wanted two seperate git commits for such
+- I also have to updated the way we return our Error evaluations, right now we return both linear and log radius, I'm just abiding by log for now, I'll fix this sometime eventually
 
 ### RESULTS
 
-Median Relative Errors (linear radius):
-p_teff    : 0.72%
-s_teff    : 0.75%
-p_logg    : 0.14%
-s_logg    : 0.20%
-p_radius_log: 1.51%
-s_radius_log: 2.46%
-Log p_radius (model output): 24.272856
-Log s_radius (model output): 0.3447865
-
-Predicted stellar parameters for new spectrum:
-p_teff    : 4156.6772
-s_teff    : 3237.5415
-p_logg    : 4.7721
-s_logg    : 5.0611
-p_radius  : 34799046656.0000
-s_radius  : 1.4117
+| Parameter | MRE |
+|---|---|
+| p_teff | 0.66% |
+| s_teff | 0.70% |
+| p_logg | 0.14% |
+| s_logg | 0.14% |
+| p_radius_log | 0.07% |
+| s_radius_log | 0.09% |
 
 
-![Predicted vs True Log g](/ANN/results/ANN-for-Stellar-Label-Determination/ANN/results/pred_vs_true_p_logg.png)
+| Parameter | Predicted | Truth | Error |
+|---|---|---|---|
+| p_teff | 3709.5198 | 3665 | 1.2% |
+| s_teff | 3495.2395 | 3372 | 3.6% |
+| p_logg | 4.8933 | 5.03 | -0.14 dex |
+| s_logg | 4.9380 | 4.53 | +0.41 dex |
+| p_radius_log | 24672921600 | 0.41 | 13.4% |
+| s_radius_log | 28766507008 | 0.67 | 38.3 % |
+
+
+
+
+![Predicted vs True Log g](/ANN-for-Stellar-Label-Determination/ANN/results/pred_vs_true_p_logg.png)
+
 See the other files in folder ANN/results
