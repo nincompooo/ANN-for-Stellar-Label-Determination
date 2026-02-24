@@ -18,25 +18,20 @@ csv_path = "clean_stellar_dataset.csv"
 wavelength_file = "Koi1422_HET.txt"  # for wavelength grid reference, optional
 
 # ========== LABELS ==========
-# We'll transform radius columns to log space for training
-label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius_log", "s_radius_log"]
+label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
 
 # ========== 1. LOAD DATA ==========
 df = pd.read_csv(csv_path)
 flux_cols = [c for c in df.columns if c.startswith("flux_")]
 
-epsilon = 1e-5
-# Create log radius columns to stabilize training
-df["p_radius_log"] = np.log(df["p_radius"] + epsilon)
-df["s_radius_log"] = np.log(df["s_radius"] + epsilon)
+# ===== SOLAR RADIUS CONVERSION (ONLY CHANGE) =====
+R_SUN = 6.957e10  # cm
 
-def undo_log_radii(arr, label_names, epsilon):
-    arr = arr.copy()
-    pr = label_names.index("p_radius_log")
-    sr = label_names.index("s_radius_log")
-    arr[:, pr] = np.exp(arr[:, pr]) - epsilon
-    arr[:, sr] = np.exp(arr[:, sr]) - epsilon
-    return arr
+df["p_radius"] = df["p_radius"] / R_SUN
+df["s_radius"] = df["s_radius"] / R_SUN
+
+
+# ===============================================
 
 # Load wavelength for info (not used in training)
 wavelength = np.loadtxt(wavelength_file)[:, 0]
@@ -51,7 +46,6 @@ def build_wavelength_mask(wl):
         (wl >= 0.8240)
     )
 
-
 mask = build_wavelength_mask(wavelength)
 print(f"Keeping {mask.sum()} / {len(mask)} wavelength bins")
 
@@ -63,7 +57,7 @@ for i in edges:
 
 # ========== 2. BUILD INPUTS & TARGETS ==========
 X_full = df[flux_cols].values
-X = X_full[:, mask]                # APPLY MASK
+X = X_full[:, mask]
 flux_cols = np.array(flux_cols)[mask].tolist()
 y = df[label_names].values
 
@@ -72,21 +66,19 @@ def normalize_synthetic(flux_primary, flux_secondary):
     norm = np.median(flux_primary)
     return flux_primary / norm, flux_secondary / norm
 
-# Normalize each combined flux row by its median (simulate primary star normalization)
 X = X / np.median(X, axis=1, keepdims=True)
 
-def apply_multiplicative_noise(X, snr=100):
+def apply_additive_noise(X, snr=30):
     """
-    Apply multiplicative Gaussian noise assuming constant SNR.
-    F_noisy = F * (1 + N(0, 1/SNR))
+    Apply additive Gaussian noise assuming constant SNR.
+    F_noisy = F + N(0, 1/SNR)
+    (since spectra are median-normalized to ~1)
     """
     sigma = 1.0 / snr
     noise = np.random.normal(loc=0.0, scale=sigma, size=X.shape)
-    return X * (1.0 + noise)
+    return X + noise
 
-# Example: SNR=100
-X = apply_multiplicative_noise(X, snr=100)
-
+X = apply_additive_noise(X, snr=30)
 
 # ========== 4. SCALE DATA ==========
 x_scaler = StandardScaler()
@@ -105,10 +97,8 @@ class StellarDataset(Dataset):
     def __init__(self, X, y):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
-
     def __len__(self):
         return len(self.X)
-
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
@@ -124,32 +114,26 @@ class StellarANN(nn.Module):
             nn.ReLU(),
             nn.BatchNorm1d(2048),
             nn.Dropout(0.3),
-
             nn.Linear(2048, 1024),
             nn.ReLU(),
             nn.BatchNorm1d(1024),
             nn.Dropout(0.3),
-
             nn.Linear(1024, 512),
             nn.ReLU(),
-
             nn.Linear(512, 128),
             nn.ReLU(),
-
             nn.Linear(128, n_output)
         )
-
     def forward(self, x):
         return self.net(x)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = StellarANN(len(flux_cols), len(label_names)).to(device)
 
-# ========== 8. TRAINING SETUP ==========
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-# ========== 9. TRAINING LOOP WITH EARLY STOPPING ==========
+# ========== 9. TRAINING LOOP ==========
 best_val = float("inf")
 patience = 15
 counter = 0
@@ -160,14 +144,11 @@ for epoch in range(max_epochs):
     train_loss = 0
     for xb, yb in train_loader:
         xb, yb = xb.to(device), yb.to(device)
-
         pred = model(xb)
         loss = criterion(pred, yb)
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
         train_loss += loss.item()
     train_loss /= len(train_loader)
 
@@ -190,58 +171,47 @@ for epoch in range(max_epochs):
         print("New best model saved")
     else:
         counter += 1
-        print(f"No improvement ({counter}/{patience})")
         if counter >= patience:
             print("Early stopping triggered")
             break
 
-# ========== 10. LOAD BEST MODEL FOR PREDICTION ==========
+# ========== 10. LOAD BEST MODEL ==========
 model.load_state_dict(torch.load(os.path.join(base_dir, "stellar_ann_model.pt")))
 model.eval()
 x_scaler = joblib.load(os.path.join(base_dir, "x_scaler.save"))
 y_scaler = joblib.load(os.path.join(base_dir, "y_scaler.save"))
 
-# ========== 11. PREDICTIONS ON TEST SET ==========
+# ========== 11. PREDICTIONS ==========
 with torch.no_grad():
     y_pred_scaled = model(torch.tensor(X_test, dtype=torch.float32).to(device)).cpu().numpy()
 
 y_pred = y_scaler.inverse_transform(y_pred_scaled)
 y_true = y_scaler.inverse_transform(y_test)
 
-# Optionally convert radius logs back to linear for metrics or keep log-space
-y_pred_lin = undo_log_radii(y_pred, label_names, epsilon)
-y_true_lin = undo_log_radii(y_true, label_names, epsilon)
+y_pred = y_scaler.inverse_transform(y_pred_scaled)
+y_true = y_scaler.inverse_transform(y_test)
 
 # ========== 12. METRICS ==========
+
 errors = y_pred - y_true
 abs_errors = np.abs(errors)
 
-print("\nMean Absolute Error per parameter (log-radius):")
+print("\nMean Absolute Error per parameter:")
 for name, mae in zip(label_names, abs_errors.mean(axis=0)):
     print(f"{name:10s}: {mae:.4f}")
 
 rel_errors = abs_errors / np.abs(y_true)
-print("\nMedian Relative Errors (log-radius):")
+
+print("\nMedian Relative Errors per parameter:")
 for name, re in zip(label_names, np.median(rel_errors, axis=0)):
     print(f"{name:10s}: {re*100:.2f}%")
 
-# If you want metrics in linear radius units, do this:
-errors_lin = y_pred_lin - y_true_lin
-abs_errors_lin = np.abs(errors_lin)
-
-print("\nMean Absolute Error per parameter (linear radius):")
-for name, mae in zip(label_names, abs_errors_lin.mean(axis=0)):
-    print(f"{name:10s}: {mae:.4f}")
-
-rel_errors_lin = abs_errors_lin / np.abs(y_true_lin)
-print("\nMedian Relative Errors (linear radius):")
-for name, re in zip(label_names, np.median(rel_errors_lin, axis=0)):
-    print(f"{name:10s}: {re*100:.2f}%")
 
 # ========== 13. SAVE PREDICTIONS TABLE ==========
 pred_df = pd.DataFrame(y_pred, columns=[f"pred_{n}" for n in label_names])
 true_df = pd.DataFrame(y_true, columns=[f"true_{n}" for n in label_names])
-err_df  = pd.DataFrame(errors, columns=[f"err_{n}" for n in label_names])
+err_df = pd.DataFrame(errors, columns=[f"err_{n}" for n in label_names])
+
 
 results_df = pd.concat([true_df, pred_df, err_df], axis=1)
 results_df.to_csv(os.path.join(base_dir, "test_predictions.csv"), index=False)
@@ -279,53 +249,30 @@ plt.savefig(os.path.join(output_dir, "masking_check.png"))
 plt.close()
 
 
-# ========== 15. INFERENCE ON NEW REAL SPECTRUM ==========
-def predict_stellar_params_from_spectrum(filename, model, x_scaler, y_scaler, epsilon=1e-5):
+# ========== 15. INFERENCE ==========
+def predict_stellar_params_from_spectrum(filename, model, x_scaler, y_scaler):
     data = np.loadtxt(filename)
-
     wl = data[:, 0]
     flux = data[:, 1]
 
     mask = build_wavelength_mask(wl)
     flux = flux[mask]
 
-
     flux = flux / np.median(flux)
     flux = flux.reshape(1, -1)
-
     flux_scaled = x_scaler.transform(flux)
 
-    model.eval()
     with torch.no_grad():
         pred_scaled = model(torch.tensor(flux_scaled, dtype=torch.float32)).numpy()
 
     pred = y_scaler.inverse_transform(pred_scaled)[0]
 
-    # Indexes for log radius
-    p_radius_log_idx = label_names.index("p_radius_log")
-    s_radius_log_idx = label_names.index("s_radius_log")
-
-    print("Log p_radius (model output):", pred[p_radius_log_idx])
-    print("Log s_radius (model output):", pred[s_radius_log_idx])
-
-    # Exponentiate to linear radius
-    p_radius_lin = np.exp(pred[p_radius_log_idx]) - epsilon
-    s_radius_lin = np.exp(pred[s_radius_log_idx]) - epsilon
-
-    # Prepare clean output dict with renamed keys
-    clean_labels = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
-
-    pred_clean = pred.copy()
-    pred_clean[p_radius_log_idx] = p_radius_lin
-    pred_clean[s_radius_log_idx] = s_radius_lin
-
-    result = dict(zip(clean_labels, pred_clean))
-
-    return result
+    return dict(zip(label_names, pred))
 
 # Example usage:
 new_spectrum_file = "Koi1422_HET.txt"
 predicted_labels = predict_stellar_params_from_spectrum(new_spectrum_file, model, x_scaler, y_scaler)
-print("\nPredicted stellar parameters for new spectrum:")
+
+print("\nPredicted stellar parameters:")
 for k, v in predicted_labels.items():
     print(f"{k:10s}: {v:.4f}")
