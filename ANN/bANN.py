@@ -49,7 +49,7 @@ def train_and_evaluate():
     y = df[label_names].values
 
     X = X / np.median(X, axis=1, keepdims=True)
-    X = apply_additive_noise(X, snr=30)
+    X = apply_additive_noise(X, snr=5)
 
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()

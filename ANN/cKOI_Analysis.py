@@ -31,19 +31,19 @@ model.eval()
 comparison_labels = ["p_teff", "s_teff", "p_radius", "s_radius"]
 
 # ===== PREDICTION =====
-# new_spectrum_file = "Koi1422_HET.txt"  
+new_spectrum_file = "Koi1422_HET.txt"  
 
-# predicted_labels = predict_stellar_params_from_spectrum(
-#     filename=new_spectrum_file,
-#     model=model,
-#     x_scaler=x_scaler,
-#     y_scaler=y_scaler,
-#     device=device
-# )
+predicted_labels = predict_stellar_params_from_spectrum(
+    filename=new_spectrum_file,
+    model=model,
+    x_scaler=x_scaler,
+    y_scaler=y_scaler,
+    device=device
+)
 
-# print("\nPredicted stellar parameters:")
-# for k, v in predicted_labels.items():
-#     print(f"{k:10s}: {v:.4f}")
+print("\nPredicted stellar parameters:")
+for k, v in predicted_labels.items():
+    print(f"{k:10s}: {v:.4f}")
 
 def save_prediction_tex(star_name, predicted_labels, true_values, output_dir):
 
@@ -112,6 +112,19 @@ derived_file = "Derived Star.tex"
 spec_dirs = [koi1, koi2, koi3]
 
 derived_dict = parse_derived_star_tex(derived_file)
+filtered_dict = {}
+
+for koi_number, values in derived_dict.items():
+    p_teff = values[0]
+    s_teff = values[3]
+
+    if p_teff <= 6200 and s_teff <= 6200:
+        filtered_dict[koi_number] = values
+
+print(f"Removed {len(derived_dict) - len(filtered_dict)} hot stars (>6200 K)")
+derived_dict = filtered_dict
+
+
 matched_files = collect_matching_spectra(spec_dirs, derived_dict)
 
 print(f"Matched {len(matched_files)} stars")
