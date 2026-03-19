@@ -1,11 +1,9 @@
-# run_ann.py
-
 import os
 import numpy as np
 import pandas as pd
 import torch
-import joblib
 import torch.nn as nn
+import joblib
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
@@ -18,25 +16,38 @@ from bANN_utils import (
     apply_additive_noise,
     StellarDataset,
     StellarANN,
-    predict_stellar_params_from_spectrum,
     plot_pred_vs_true,
-    plot_mask_check
+    plot_mask_check,
+    plot_teff_with_luminosity_ratio
 )
 
-# ========== PATHS ==========
+# ==========================
+# PATHS
+# ==========================
+
 base_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/ANN"
 output_dir = os.path.join(base_dir, "results")
 os.makedirs(output_dir, exist_ok=True)
 
 csv_path = "clean_stellar_dataset.csv"
+# csv_path = "clean_stellar_dataset_Tdiff1000.csv"
 wavelength_file = "Koi1422_HET.txt"
+
+
+# ==========================
+# TRAINING FUNCTION
+# ==========================
 
 def train_and_evaluate():
 
+    # ======================
     # LOAD DATA
+    # ======================
+
     df = pd.read_csv(csv_path)
     flux_cols = [c for c in df.columns if c.startswith("flux_")]
 
+    # Convert radii to solar units
     R_SUN = 6.957e10
     df["p_radius"] /= R_SUN
     df["s_radius"] /= R_SUN
@@ -48,8 +59,13 @@ def train_and_evaluate():
     X = X_full[:, mask]
     y = df[label_names].values
 
+    # Normalize spectra
     X = X / np.median(X, axis=1, keepdims=True)
-    X = apply_additive_noise(X, snr=5)
+    X = apply_additive_noise(X, snr=30)
+
+    # ======================
+    # SCALING
+    # ======================
 
     x_scaler = StandardScaler()
     y_scaler = StandardScaler()
@@ -61,28 +77,55 @@ def train_and_evaluate():
         X_scaled, y_scaled, test_size=0.2, random_state=42
     )
 
-    train_loader = DataLoader(StellarDataset(X_train, y_train), batch_size=128, shuffle=True)
-    test_loader = DataLoader(StellarDataset(X_test, y_test), batch_size=128)
+    train_loader = DataLoader(
+        StellarDataset(X_train, y_train),
+        batch_size=128,
+        shuffle=True
+    )
+
+    test_loader = DataLoader(
+        StellarDataset(X_test, y_test),
+        batch_size=128
+    )
+
+    # ======================
+    # MODEL SETUP
+    # ======================
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
     model = StellarANN(X_train.shape[1], len(label_names)).to(device)
 
-    criterion = nn.MSELoss()
+    # 🔥 Stronger secondary weighting
+    weights = torch.tensor([1.0, 10.0, 1.0, 5.0, 1.0, 5.0], device=device)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     best_val = float("inf")
-    patience = 15
+    patience = 20
     counter = 0
 
-    for epoch in range(20):
+    # ======================
+    # TRAINING LOOP
+    # ======================
 
+    n_epochs = 100 
+
+    for epoch in range(n_epochs):
+
+        # ----- Training -----
         model.train()
         train_loss = 0
 
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
+
             pred = model(xb)
-            loss = criterion(pred, yb)
+
+            # Proper weighted MSE
+            loss_per_param = (pred - yb) ** 2
+            weighted_loss = loss_per_param * weights
+            loss = weighted_loss.mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -92,43 +135,88 @@ def train_and_evaluate():
 
         train_loss /= len(train_loader)
 
+        # ----- Validation -----
         model.eval()
         val_loss = 0
 
         with torch.no_grad():
             for xb, yb in test_loader:
                 xb, yb = xb.to(device), yb.to(device)
-                val_loss += criterion(model(xb), yb).item()
+
+                pred = model(xb)
+                loss_per_param = (pred - yb) ** 2
+                weighted_loss = loss_per_param * weights
+                val_loss += weighted_loss.mean().item()
 
         val_loss /= len(test_loader)
 
         print(f"Epoch {epoch:3d} | Train {train_loss:.4f} | Val {val_loss:.4f}")
 
+        # ----- Early Stopping -----
         if val_loss < best_val:
             best_val = val_loss
             counter = 0
-            torch.save(model.state_dict(), os.path.join(base_dir, "stellar_ann_model.pt"))
-            joblib.dump(x_scaler, os.path.join(base_dir, "x_scaler.save"))
-            joblib.dump(y_scaler, os.path.join(base_dir, "y_scaler.save"))
-            print("New best model saved")
+
+            torch.save(model.state_dict(),
+                       os.path.join(base_dir, "stellar_ann_model.pt"))
+
+            joblib.dump(x_scaler,
+                        os.path.join(base_dir, "x_scaler.save"))
+
+            joblib.dump(y_scaler,
+                        os.path.join(base_dir, "y_scaler.save"))
+
+            print("✓ New best model saved")
+
         else:
             counter += 1
             if counter >= patience:
                 print("Early stopping triggered")
                 break
 
-    # Load best
-    model.load_state_dict(torch.load(os.path.join(base_dir, "stellar_ann_model.pt")))
+    # ======================
+    # EVALUATION
+    # ======================
+
+    model.load_state_dict(
+        torch.load(os.path.join(base_dir, "stellar_ann_model.pt"))
+    )
     model.eval()
 
-    x_scaler = joblib.load(os.path.join(base_dir, "x_scaler.save"))
-    y_scaler = joblib.load(os.path.join(base_dir, "y_scaler.save"))
-
     with torch.no_grad():
-        y_pred_scaled = model(torch.tensor(X_test, dtype=torch.float32).to(device)).cpu().numpy()
+        y_pred_scaled = model(
+            torch.tensor(X_test, dtype=torch.float32).to(device)
+        ).cpu().numpy()
 
     y_pred = y_scaler.inverse_transform(y_pred_scaled)
     y_true = y_scaler.inverse_transform(y_test)
+
+    # ======================
+    # TEMPORARY EXTRACT PARAMETERS
+    # ======================
+
+    idx_p_teff = label_names.index("p_teff")
+    idx_s_teff = label_names.index("s_teff")
+    idx_p_rad  = label_names.index("p_radius")
+    idx_s_rad  = label_names.index("s_radius")
+
+    # True vs predicted Teff
+    p_teff = y_true[:, idx_p_teff]
+    p_teff_pred = y_pred[:, idx_p_teff]
+
+    s_teff = y_true[:, idx_s_teff]
+    s_teff_pred = y_pred[:, idx_s_teff]
+
+    # Radii (needed for luminosity ratio)
+    p_rad = y_true[:, idx_p_rad]
+    s_rad = y_true[:, idx_s_rad]
+
+    log_lum_ratio = np.log10(
+        (s_rad**2 * s_teff**4) /
+        (p_rad**2 * p_teff**4)
+    )
+
+    # ======================
 
     errors = y_pred - y_true
     abs_errors = np.abs(errors)
@@ -143,9 +231,34 @@ def train_and_evaluate():
     for name, re in zip(label_names, np.median(rel_errors, axis=0)):
         print(f"{name:10s}: {re*100:.2f}%")
 
+    # ======================
+    # PLOTS
+    # ======================
+
     plot_pred_vs_true(y_true, y_pred, label_names, output_dir)
     plot_mask_check(df, wavelength, build_wavelength_mask, output_dir)
 
+    # Secondary Teff plot
+    plot_teff_with_luminosity_ratio(
+        s_teff,
+        s_teff_pred,
+        log_lum_ratio,
+        save_path=os.path.join(output_dir, "s_teff_luminosity_ratio.png")
+    )
+
+    # Primary Teff plot
+    plot_teff_with_luminosity_ratio(
+        p_teff,
+        p_teff_pred,
+        log_lum_ratio,
+        save_path=os.path.join(output_dir, "p_teff_luminosity_ratio.png")
+    )
+
+
+
+# ==========================
+# RUN
+# ==========================
 
 if __name__ == "__main__":
     train_and_evaluate()

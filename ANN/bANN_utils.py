@@ -194,3 +194,67 @@ def plot_pred_vs_estimated(y_true, y_pred, label_names, output_dir):
 
         plt.savefig(os.path.join(output_dir, f"pred_vs_true_{name}.png"))
         plt.close()
+
+def plot_teff_with_luminosity_ratio(
+    s_teff,
+    s_teff_pred,
+    log_lum_ratio,
+    save_path=None,
+    show=True
+):
+    """
+    Scatter plot of true vs predicted secondary Teff,
+    color-coded by log10 luminosity ratio.
+
+    Parameters
+    ----------
+    s_teff : array-like
+        True secondary Teff values
+    s_teff_pred : array-like
+        Predicted secondary Teff values
+    log_lum_ratio : array-like
+        log10(L_s / L_p) values for color-coding
+    save_path : str, optional
+        Path to save the figure (if None, won't save)
+    show : bool, optional
+        Whether to display the plot
+    """
+
+    plt.figure(figsize=(7, 6))
+
+    sc = plt.scatter(
+        s_teff,
+        s_teff_pred,
+        c=log_lum_ratio,
+        cmap="viridis",
+        alpha=0.8
+    )
+
+    # 1:1 reference line
+    min_val = np.min(s_teff)
+    max_val = np.max(s_teff)
+
+    plt.plot(
+        [min_val, max_val],
+        [min_val, max_val],
+        'k--'
+    )
+
+    plt.xlabel("True Secondary Teff [K]")
+    plt.ylabel("Predicted Secondary Teff [K]")
+    plt.title("Secondary Teff (Color-coded by Luminosity Ratio)")
+
+    cbar = plt.colorbar(sc)
+    cbar.set_label("log10(L_s / L_p)")
+
+    plt.tight_layout()
+
+    # Save if path provided
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
