@@ -18,7 +18,9 @@ from bANN_utils import (
     StellarANN,
     plot_pred_vs_true,
     plot_mask_check,
-    plot_teff_with_luminosity_ratio
+    plot_teff_with_luminosity_ratio,
+    evaluate_koi_predictions,
+    plot_mse
 )
 
 # ==========================
@@ -26,11 +28,11 @@ from bANN_utils import (
 # ==========================
 
 base_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/ANN"
-output_dir = os.path.join(base_dir, "results")
+output_dir = os.path.join(base_dir, "filtered results")
 os.makedirs(output_dir, exist_ok=True)
 
-csv_path = "clean_stellar_dataset.csv"
-# csv_path = "clean_stellar_dataset_Tdiff1000.csv"
+# csv_path = "clean_stellar_dataset.csv"
+csv_path = "clean_stellar_dataset_Tdiff1000.csv"
 wavelength_file = "Koi1422_HET.txt"
 
 
@@ -96,7 +98,7 @@ def train_and_evaluate():
 
     model = StellarANN(X_train.shape[1], len(label_names)).to(device)
 
-    # 🔥 Stronger secondary weighting
+    # Stronger secondary weighting (bro idek what this is anymore lmaoo)
     weights = torch.tensor([1.0, 10.0, 1.0, 5.0, 1.0, 5.0], device=device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -111,11 +113,17 @@ def train_and_evaluate():
 
     n_epochs = 100 
 
+    testing_loss = []
+    val_losses = []
+    train_losses = []
+
+
     for epoch in range(n_epochs):
+
+        train_loss = 0
 
         # ----- Training -----
         model.train()
-        train_loss = 0
 
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
@@ -134,6 +142,7 @@ def train_and_evaluate():
             train_loss += loss.item()
 
         train_loss /= len(train_loader)
+        train_losses.append(train_loss)
 
         # ----- Validation -----
         model.eval()
@@ -149,6 +158,7 @@ def train_and_evaluate():
                 val_loss += weighted_loss.mean().item()
 
         val_loss /= len(test_loader)
+        val_losses.append(val_loss)
 
         print(f"Epoch {epoch:3d} | Train {train_loss:.4f} | Val {val_loss:.4f}")
 
@@ -166,7 +176,7 @@ def train_and_evaluate():
             joblib.dump(y_scaler,
                         os.path.join(base_dir, "y_scaler.save"))
 
-            print("✓ New best model saved")
+            # print("New best model saved")
 
         else:
             counter += 1
@@ -177,6 +187,8 @@ def train_and_evaluate():
     # ======================
     # EVALUATION
     # ======================
+
+
 
     model.load_state_dict(
         torch.load(os.path.join(base_dir, "stellar_ann_model.pt"))
@@ -212,8 +224,8 @@ def train_and_evaluate():
     s_rad = y_true[:, idx_s_rad]
 
     log_lum_ratio = np.log10(
-        (s_rad**2 * s_teff**4) /
-        (p_rad**2 * p_teff**4)
+        (s_rad/p_rad)**2 * 
+        (s_teff/p_teff)**4
     )
 
     # ======================
@@ -221,19 +233,37 @@ def train_and_evaluate():
     errors = y_pred - y_true
     abs_errors = np.abs(errors)
 
-    print("\nMean Absolute Error per parameter:")
-    for name, mae in zip(label_names, abs_errors.mean(axis=0)):
-        print(f"{name:10s}: {mae:.4f}")
+    # okay i was stupid, it's MSE not MAE and MRE
 
-    rel_errors = abs_errors / np.abs(y_true)
+    from sklearn.metrics import mean_squared_error
+    # overall MSE, kinda useless idfk
+    mse_sklearn = mean_squared_error(y_true, y_pred)
+    print(f"MSE: {mse_sklearn:.4f}")
 
-    print("\nMedian Relative Errors per parameter:")
-    for name, re in zip(label_names, np.median(rel_errors, axis=0)):
-        print(f"{name:10s}: {re*100:.2f}%")
+    # by parameter heh
+
+    print("\nMean Squared Error per parameter:")
+    mse_per_param = ((y_pred - y_true) ** 2).mean(axis=0)
+
+    for name, mse in zip(label_names, mse_per_param):
+        print(f"{name:10s}: {mse:.4f}")
+
+    # print("\nMean Absolute Error per parameter:")
+    # for name, mae in zip(label_names, abs_errors.mean(axis=0)):
+    #     print(f"{name:10s}: {mae:.4f}")
+
+    # rel_errors = abs_errors / np.abs(y_true)
+
+    # print("\nMedian Relative Errors per parameter:")
+    # for name, re in zip(label_names, np.median(rel_errors, axis=0)):
+    #     print(f"{name:10s}: {re*100:.2f}%")
 
     # ======================
     # PLOTS
     # ======================
+
+    #  plotting mse vs # of iterations for testing loss ---> like the only one we actually gaf about tbh
+    plot_mse(output_dir, val_losses, train_losses, y_true, y_pred)
 
     plot_pred_vs_true(y_true, y_pred, label_names, output_dir)
     plot_mask_check(df, wavelength, build_wavelength_mask, output_dir)
@@ -243,7 +273,7 @@ def train_and_evaluate():
         s_teff,
         s_teff_pred,
         log_lum_ratio,
-        save_path=os.path.join(output_dir, "s_teff_luminosity_ratio.png")
+        save_path=os.path.join(output_dir, "Secondary Teff Luminosity Ratio.png")
     )
 
     # Primary Teff plot
@@ -251,8 +281,12 @@ def train_and_evaluate():
         p_teff,
         p_teff_pred,
         log_lum_ratio,
-        save_path=os.path.join(output_dir, "p_teff_luminosity_ratio.png")
+        save_path=os.path.join(output_dir, "primary teff luminosity ratio.png")
     )
+
+    print("\nNow we're doing that real KOI data bullshit")
+
+    evaluate_koi_predictions(output_dir)
 
 
 
