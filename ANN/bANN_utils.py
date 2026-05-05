@@ -8,10 +8,13 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 
+EXPECTED_FEATURES = 1947
+
 # ========== LABELS ==========
 label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
 
 def build_wavelength_mask(wl):
+
     return (
         (wl <= 0.6860) |
         ((wl >= 0.6880) & (wl <= 0.7600)) |
@@ -19,85 +22,128 @@ def build_wavelength_mask(wl):
         (wl >= 0.8240)
     )
 
-EXPECTED_FEATURES = 1947
-
 def enforce_masking(X, wavelength):
+
     mask = build_wavelength_mask(wavelength)
 
-    # CASE 1: already masked correctly
-    if X.shape[1] == EXPECTED_FEATURES:
-        return X, mask
+    expected_full_features = len(mask)
+    expected_masked_features = np.sum(mask)
 
-    # CASE 2: full spectrum → apply mask
-    if X.shape[1] == len(mask):
+    # ----------------------------------
+    # CASE 1:
+    # already masked correctly
+    # ----------------------------------
+
+    if X.shape[1] == expected_masked_features:
+
+        if expected_masked_features != EXPECTED_FEATURES:
+            raise ValueError(
+                f"[MASK ERROR] "
+                f"Mask produces {expected_masked_features} features "
+                f"but EXPECTED_FEATURES={EXPECTED_FEATURES}"
+            )
+
+        return X, mask
+    # ----------------------------------
+    # CASE 2:
+    # full spectrum -> apply mask
+    # ----------------------------------
+
+    if X.shape[1] == expected_full_features:
+
         X_masked = X[:, mask]
+
+        if X_masked.shape[1] != EXPECTED_FEATURES:
+            raise ValueError(
+                f"[MASK ERROR] After masking got "
+                f"{X_masked.shape[1]} features "
+                f"instead of {EXPECTED_FEATURES}"
+            )
+
         return X_masked, mask
 
-    # CASE 3: corrupted / mismatched input
+    # ----------------------------------
+    # CASE 3:
+    # invalid shape
+    # ----------------------------------
+
     raise ValueError(
-        f"[MASK ERROR] Got {X.shape[1]} features, expected full ({len(mask)}) or masked ({EXPECTED_FEATURES})"
+        f"[MASK ERROR] Got {X.shape[1]} features.\n"
+        f"Expected either:\n"
+        f" - full spectrum: {expected_full_features}\n"
+        f" - masked spectrum: {expected_masked_features}"
     )
 
+
 def preprocess_spectrum_matrix(X, wavelength):
+
+    # ------------------------------
+    # FORCE CONSISTENT MASKING
+    # ------------------------------
+
     X, mask = enforce_masking(X, wavelength)
 
-    # normalization ALWAYS after masking
-    X = X / np.median(X, axis=1, keepdims=True)
+    # ------------------------------
+    # NORMALIZE AFTER MASKING
+    # ------------------------------
+
+    median_flux = np.median(X, axis=1, keepdims=True)
+
+    # avoid divide-by-zero
+    median_flux[median_flux == 0] = 1.0
+
+    X = X / median_flux
 
     return X, mask
 
 def apply_additive_noise(X, snr=30):
+
     sigma = 1.0 / snr
-    noise = np.random.normal(loc=0.0, scale=sigma, size=X.shape)
+
+    noise = np.random.normal(
+        loc=0.0,
+        scale=sigma,
+        size=X.shape
+    )
+
     return X + noise
 
 class StellarDataset(Dataset):
+
     def __init__(self, X, y):
+
         self.X = torch.tensor(X, dtype=torch.float32)
+
         self.y = torch.tensor(y, dtype=torch.float32)
 
     def __len__(self):
+
         return len(self.X)
 
     def __getitem__(self, idx):
+
         return self.X[idx], self.y[idx]
 
-# ========== MODEL ==========
-# class StellarANN(nn.Module):
-#     def __init__(self, n_input, n_output):
-#         super().__init__()
-#         self.net = nn.Sequential(
-#             nn.Linear(n_input, 128),
-#             nn.ReLU(),
-#             # nn.BatchNorm1d(128),
-#             nn.Dropout(0.1),
-
-#             nn.Linear(128, 64),
-#             nn.ReLU(),
-
-#             nn.Linear(64, n_output)
-#         )
-
-
-#     def forward(self, x):
-#         return self.net(x)
 
 class StellarANN(nn.Module):
+
     def __init__(self, n_input, n_output):
+
         super().__init__()
+
         self.net = nn.Sequential(
+
             nn.Linear(n_input, 128),
             nn.ReLU(),
-            nn.Dropout(0.2),
 
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.1),
 
             nn.Linear(64, n_output)
         )
 
     def forward(self, x):
+
         return self.net(x)
 
 def plot_pred_vs_true(y_true, y_pred, label_names, output_dir):
@@ -213,19 +259,49 @@ def predict_stellar_params_from_spectrum(
     y_scaler,
     device="cpu"
 ):
+
     data = np.loadtxt(filename)
+
     wl = data[:, 0]
+
     flux = data[:, 1].reshape(1, -1)
 
-    flux, mask = enforce_masking(flux, wl)
+    # --------------------------------
+    # EXACT SAME PIPELINE AS TRAINING
+    # --------------------------------
 
-    flux = flux / np.median(flux, axis=1, keepdims=True)
+    flux, mask = preprocess_spectrum_matrix(
+        flux,
+        wl
+    )
+
+    # DO NOT ADD NOISE DURING INFERENCE
+
+    # --------------------------------
+    # SCALE
+    # --------------------------------
+
+    if flux.shape[1] != x_scaler.n_features_in_:
+        raise ValueError(
+            f"[SCALER ERROR] "
+            f"Input has {flux.shape[1]} features "
+            f"but scaler expects "
+            f"{x_scaler.n_features_in_}"
+        )
 
     flux_scaled = x_scaler.transform(flux)
 
+    # --------------------------------
+    # PREDICT
+    # --------------------------------
+
     with torch.no_grad():
+
         pred_scaled = model(
-            torch.tensor(flux_scaled, dtype=torch.float32).to(device)
+            torch.tensor(
+                flux_scaled,
+                dtype=torch.float32
+            ).to(device)
         ).cpu().numpy()
 
     pred = y_scaler.inverse_transform(pred_scaled)[0]
