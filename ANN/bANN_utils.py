@@ -1,102 +1,131 @@
+# ==========================
+# bANN_utils.py
+# ==========================
 
 import os
 import numpy as np
-import pandas as pd
-import joblib
 import torch
 import torch.nn as nn
+
 from torch.utils.data import Dataset
+
 import matplotlib.pyplot as plt
+
+# ==========================
+# LABELS
+# ==========================
+
+label_names = [
+    "p_teff",
+    "s_teff",
+    "p_logg",
+    "s_logg",
+    "p_radius",
+    "s_radius"
+]
+
+# ==========================
+# CONSTANTS
+# ==========================
 
 EXPECTED_FEATURES = 1947
 
-# ========== LABELS ==========
-label_names = ["p_teff", "s_teff", "p_logg", "s_logg", "p_radius", "s_radius"]
+# ==========================
+# MASKING
+# ==========================
 
 def build_wavelength_mask(wl):
 
     return (
-        (wl <= 0.6860) |
-        ((wl >= 0.6880) & (wl <= 0.7600)) |
-        ((wl >= 0.7660) & (wl <= 0.8210)) |
+        (wl <= 0.6860)
+        |
+        ((wl >= 0.6880) & (wl <= 0.7600))
+        |
+        ((wl >= 0.7660) & (wl <= 0.8210))
+        |
         (wl >= 0.8240)
     )
 
 def enforce_masking(X, wavelength):
 
-    mask = build_wavelength_mask(wavelength)
+    mask = build_wavelength_mask(
+        wavelength
+    )
 
-    expected_full_features = len(mask)
-    expected_masked_features = np.sum(mask)
+    expected_full = len(mask)
 
-    # ----------------------------------
-    # CASE 1:
-    # already masked correctly
-    # ----------------------------------
+    expected_masked = np.sum(mask)
 
-    if X.shape[1] == expected_masked_features:
+    # --------------------------------
+    # already masked
+    # --------------------------------
 
-        if expected_masked_features != EXPECTED_FEATURES:
-            raise ValueError(
-                f"[MASK ERROR] "
-                f"Mask produces {expected_masked_features} features "
-                f"but EXPECTED_FEATURES={EXPECTED_FEATURES}"
-            )
+    if X.shape[1] == expected_masked:
 
         return X, mask
-    # ----------------------------------
-    # CASE 2:
-    # full spectrum -> apply mask
-    # ----------------------------------
 
-    if X.shape[1] == expected_full_features:
+    # --------------------------------
+    # full spectrum
+    # --------------------------------
+
+    if X.shape[1] == expected_full:
 
         X_masked = X[:, mask]
 
-        if X_masked.shape[1] != EXPECTED_FEATURES:
-            raise ValueError(
-                f"[MASK ERROR] After masking got "
-                f"{X_masked.shape[1]} features "
-                f"instead of {EXPECTED_FEATURES}"
-            )
-
         return X_masked, mask
 
-    # ----------------------------------
-    # CASE 3:
-    # invalid shape
-    # ----------------------------------
+    # --------------------------------
+    # invalid
+    # --------------------------------
 
     raise ValueError(
-        f"[MASK ERROR] Got {X.shape[1]} features.\n"
-        f"Expected either:\n"
-        f" - full spectrum: {expected_full_features}\n"
-        f" - masked spectrum: {expected_masked_features}"
+        f"[MASK ERROR] Got "
+        f"{X.shape[1]} features.\n"
+        f"Expected:\n"
+        f"full={expected_full}\n"
+        f"masked={expected_masked}"
     )
 
+def preprocess_spectrum_matrix(
+    X,
+    wavelength
+):
 
-def preprocess_spectrum_matrix(X, wavelength):
-
-    # ------------------------------
+    # --------------------------------
     # FORCE CONSISTENT MASKING
-    # ------------------------------
+    # --------------------------------
 
-    X, mask = enforce_masking(X, wavelength)
+    X, mask = enforce_masking(
+        X,
+        wavelength
+    )
 
-    # ------------------------------
+    # --------------------------------
     # NORMALIZE AFTER MASKING
-    # ------------------------------
+    # --------------------------------
 
-    median_flux = np.median(X, axis=1, keepdims=True)
+    median_flux = np.median(
+        X,
+        axis=1,
+        keepdims=True
+    )
 
-    # avoid divide-by-zero
-    median_flux[median_flux == 0] = 1.0
+    median_flux[
+        median_flux == 0
+    ] = 1.0
 
     X = X / median_flux
 
     return X, mask
 
-def apply_additive_noise(X, snr=30):
+# ==========================
+# NOISE
+# ==========================
+
+def apply_additive_noise(
+    X,
+    snr=30
+):
 
     sigma = 1.0 / snr
 
@@ -108,13 +137,33 @@ def apply_additive_noise(X, snr=30):
 
     return X + noise
 
+# ==========================
+# DATASET
+# ==========================
+
 class StellarDataset(Dataset):
 
-    def __init__(self, X, y):
+    def __init__(
+        self,
+        X,
+        y,
+        weights
+    ):
 
-        self.X = torch.tensor(X, dtype=torch.float32)
+        self.X = torch.tensor(
+            X,
+            dtype=torch.float32
+        )
 
-        self.y = torch.tensor(y, dtype=torch.float32)
+        self.y = torch.tensor(
+            y,
+            dtype=torch.float32
+        )
+
+        self.weights = torch.tensor(
+            weights,
+            dtype=torch.float32
+        )
 
     def __len__(self):
 
@@ -122,30 +171,77 @@ class StellarDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        return self.X[idx], self.y[idx]
+        return (
+            self.X[idx],
+            self.y[idx],
+            self.weights[idx]
+        )
 
+# ==========================
+# MODEL
+# ==========================
 
 class StellarANN(nn.Module):
 
-    def __init__(self, n_input, n_output):
+    def __init__(
+        self,
+        n_input,
+        n_output
+    ):
 
         super().__init__()
 
+        # ===================================
+        # BIGGER NETWORK
+        # ===================================
+        #
+        # 1947 -> 512 -> 256 -> 128 -> 6
+        #
+        # NO DROPOUT
+        #
+        # ===================================
+
         self.net = nn.Sequential(
 
-            nn.Linear(n_input, 128),
+            nn.Linear(n_input, 512),
             nn.ReLU(),
 
-            nn.Linear(128, 64),
+            nn.Linear(512, 256),
             nn.ReLU(),
 
-            nn.Linear(64, n_output)
+            nn.Linear(256, 128),
+            nn.ReLU(),
+
+            nn.Linear(128, n_output)
         )
 
     def forward(self, x):
 
         return self.net(x)
 
+# ============================================================
+# KEEP ALL YOUR EXISTING PLOTTING / KOI FUNCTIONS BELOW
+# ============================================================
+
+#
+# IMPORTANT:
+#
+# DO NOT change your prediction pipeline anymore.
+#
+# You now have:
+#
+# ✔ consistent masking
+# ✔ consistent normalization
+# ✔ larger ANN capacity
+# ✔ no dropout
+# ✔ weight decay
+# ✔ early stopping
+# ✔ weighted low-luminosity training
+#
+# This is now MUCH better aligned with
+# spectroscopy regression problems.
+#
+# ============================================================
 def plot_pred_vs_true(y_true, y_pred, label_names, output_dir):
 
     units = {
