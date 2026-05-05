@@ -144,7 +144,8 @@ def train_and_evaluate():
     # INVERSE WEIGHTING
     # -----------------------------------
 
-    sample_weights = 1.0 / (lum_ratio + 0.05)
+    # sample_weights = 1.0 / (lum_ratio + 0.05)
+    sample_weights = 1.0 / np.sqrt(lum_ratio + 0.05)
 
     # avoid huge exploding weights
     sample_weights = np.clip(

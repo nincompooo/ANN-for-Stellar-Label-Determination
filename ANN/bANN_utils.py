@@ -219,29 +219,6 @@ class StellarANN(nn.Module):
 
         return self.net(x)
 
-# ============================================================
-# KEEP ALL YOUR EXISTING PLOTTING / KOI FUNCTIONS BELOW
-# ============================================================
-
-#
-# IMPORTANT:
-#
-# DO NOT change your prediction pipeline anymore.
-#
-# You now have:
-#
-# ✔ consistent masking
-# ✔ consistent normalization
-# ✔ larger ANN capacity
-# ✔ no dropout
-# ✔ weight decay
-# ✔ early stopping
-# ✔ weighted low-luminosity training
-#
-# This is now MUCH better aligned with
-# spectroscopy regression problems.
-#
-# ============================================================
 def plot_pred_vs_true(y_true, y_pred, label_names, output_dir):
 
     units = {
