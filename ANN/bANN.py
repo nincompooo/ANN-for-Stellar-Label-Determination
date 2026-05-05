@@ -20,7 +20,8 @@ from bANN_utils import (
     plot_mask_check,
     plot_teff_with_luminosity_ratio,
     evaluate_koi_predictions,
-    plot_mse
+    plot_mse,
+    heteroscedastic_loss
 )
 
 # ==========================
@@ -128,12 +129,40 @@ def train_and_evaluate():
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
 
-            pred = model(xb)
+            # pred = model(xb)
 
             # Proper weighted MSE
-            loss_per_param = (pred - yb) ** 2
-            weighted_loss = loss_per_param * weights
-            loss = weighted_loss.mean()
+            # loss_per_param = (pred - yb) ** 2
+            # weighted_loss = loss_per_param * weights
+            # loss = weighted_loss.mean()
+
+            #####################
+
+            # criterion = nn.MSELoss()
+            # pred = model(xb)
+            # loss = criterion(pred, yb)
+
+
+            pred = model(xb)
+
+            # compute luminosity ratio from TRUE labels (UNSCALED)
+            yb_unscaled = torch.tensor(
+                y_scaler.inverse_transform(yb.cpu().numpy()),
+                dtype=torch.float32,
+                device=device
+            )
+
+            p_teff = yb_unscaled[:, label_names.index("p_teff")]
+            s_teff = yb_unscaled[:, label_names.index("s_teff")]
+            p_rad  = yb_unscaled[:, label_names.index("p_radius")]
+            s_rad  = yb_unscaled[:, label_names.index("s_radius")]
+
+            lum_ratio = (s_rad / p_rad)**2 * (s_teff / p_teff)**4
+
+            loss = heteroscedastic_loss(pred, yb, lum_ratio, label_names)
+            val_loss += heteroscedastic_loss(pred, yb, lum_ratio, label_names).item()
+
+            #####################
 
             optimizer.zero_grad()
             loss.backward()
@@ -153,9 +182,12 @@ def train_and_evaluate():
                 xb, yb = xb.to(device), yb.to(device)
 
                 pred = model(xb)
-                loss_per_param = (pred - yb) ** 2
-                weighted_loss = loss_per_param * weights
-                val_loss += weighted_loss.mean().item()
+                val_loss += criterion(pred, yb).item()
+
+                # pred = model(xb)
+                # loss_per_param = (pred - yb) ** 2
+                # weighted_loss = loss_per_param * weights
+                # val_loss += weighted_loss.mean().item()
 
         val_loss /= len(test_loader)
         val_losses.append(val_loss)
