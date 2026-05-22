@@ -1,7 +1,3 @@
-# ==========================
-# bANN_utils.py
-# ==========================
-
 import os
 import numpy as np
 import torch
@@ -11,9 +7,6 @@ from torch.utils.data import Dataset
 
 import matplotlib.pyplot as plt
 
-# ==========================
-# LABELS
-# ==========================
 
 label_names = [
     "p_teff",
@@ -24,15 +17,8 @@ label_names = [
     "s_radius"
 ]
 
-# ==========================
-# CONSTANTS
-# ==========================
-
 EXPECTED_FEATURES = 1947
 
-# ==========================
-# MASKING
-# ==========================
 
 def build_wavelength_mask(wl):
 
@@ -56,17 +42,13 @@ def enforce_masking(X, wavelength):
 
     expected_masked = np.sum(mask)
 
-    # --------------------------------
     # already masked
-    # --------------------------------
 
     if X.shape[1] == expected_masked:
 
         return X, mask
 
-    # --------------------------------
     # full spectrum
-    # --------------------------------
 
     if X.shape[1] == expected_full:
 
@@ -122,16 +104,30 @@ def preprocess_spectrum_matrix(
 # NOISE
 # ==========================
 
+# def apply_additive_noise(
+#     X,
+#     snr=30
+# ):
+
+#     sigma = 1.0 / snr
+
+#     noise = np.random.normal(
+#         loc=0.0,
+#         scale=sigma,
+#         size=X.shape
+#     )
+
+#     return X + noise
+
 def apply_additive_noise(
     X,
     snr=30
 ):
+    amplitude = 1.0 / snr
 
-    sigma = 1.0 / snr
-
-    noise = np.random.normal(
-        loc=0.0,
-        scale=sigma,
+    noise = np.random.uniform(
+        low=-amplitude,
+        high=amplitude,
         size=X.shape
     )
 
@@ -190,16 +186,6 @@ class StellarANN(nn.Module):
     ):
 
         super().__init__()
-
-        # ===================================
-        # BIGGER NETWORK
-        # ===================================
-        #
-        # 1947 -> 512 -> 256 -> 128 -> 6
-        #
-        # NO DROPOUT
-        #
-        # ===================================
 
         self.net = nn.Sequential(
 
