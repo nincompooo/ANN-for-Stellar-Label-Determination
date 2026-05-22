@@ -65,7 +65,7 @@ def train_and_evaluate():
 
     X = apply_additive_noise(
         X,
-        snr=10
+        snr=5
     )
 
     print(f"\nMasked feature count: {X.shape[1]}")
