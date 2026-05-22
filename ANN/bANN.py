@@ -1,7 +1,3 @@
-# ==========================
-# bANN.py
-# ==========================
-
 import os
 import numpy as np
 import pandas as pd
@@ -24,91 +20,56 @@ from bANN_utils import (
     evaluate_koi_predictions,
 )
 
-# ==========================
-# CONSTANTS
-# ==========================
-
 EXPECTED_FEATURES = 1947
 
-# ==========================
-# PATHS
-# ==========================
-
 base_dir = "/data/niaycarr/ANN-for-Stellar-Label-Determination/ANN"
-
 output_dir = os.path.join(base_dir, "filtered results")
-
 os.makedirs(output_dir, exist_ok=True)
 
-csv_path = "clean_stellar_dataset_Tdiff1000.csv"
+# OMG we were using Tdiff1000 dataset instead of the original dataset?
+csv_path = "clean_stellar_dataset.csv"
 
 model_path = os.path.join(base_dir, "stellar_ann_model.pt")
 
 x_scaler_path = os.path.join(base_dir, "x_scaler.save")
-
 y_scaler_path = os.path.join(base_dir, "y_scaler.save")
 
-# ==========================
-# TRAIN
-# ==========================
 
 def train_and_evaluate():
 
-    # -----------------------------------
     # LOAD DATA
-    # -----------------------------------
 
     print("\nLoading dataset...")
-
-    df = pd.read_csv(csv_path)
-
+    # df = pd.read_csv(csv_path)
+    df = pd.read_parquet(
+        "clean_stellar_dataset_Tdiff1000.parquet"
+    )
     flux_cols = [c for c in df.columns if c.startswith("flux_")]
 
-    # -----------------------------------
-    # CONVERT RADII TO SOLAR UNITS
-    # -----------------------------------
-
     R_SUN = 6.957e10
-
     df["p_radius"] /= R_SUN
     df["s_radius"] /= R_SUN
 
-    # -----------------------------------
     # INPUTS / LABELS
-    # -----------------------------------
 
     X_full = df[flux_cols].values
-
     y = df[label_names].values
 
-    # -----------------------------------
     # LOAD WAVELENGTH GRID
-    # -----------------------------------
 
     wavelength = np.loadtxt("Koi1422_HET.txt")[:, 0]
-
-    # -----------------------------------
-    # CONSISTENT MASKING + NORMALIZATION
-    # -----------------------------------
-
     X, mask = preprocess_spectrum_matrix(
         X_full,
         wavelength
     )
 
-    # -----------------------------------
-    # ADDITIVE NOISE
-    # -----------------------------------
-
     X = apply_additive_noise(
         X,
-        snr=30
+        snr=10
     )
 
     print(f"\nMasked feature count: {X.shape[1]}")
-
     if X.shape[1] != EXPECTED_FEATURES:
-
         raise ValueError(
             f"[FATAL] Expected {EXPECTED_FEATURES} features "
             f"but got {X.shape[1]}"
@@ -140,10 +101,6 @@ def train_and_evaluate():
         (s_teff / p_teff) ** 4
     )
 
-    # -----------------------------------
-    # INVERSE WEIGHTING
-    # -----------------------------------
-
     # sample_weights = 1.0 / (lum_ratio + 0.05)
     sample_weights = 1.0 / np.sqrt(lum_ratio + 0.05)
 
@@ -165,21 +122,13 @@ def train_and_evaluate():
     print(f"max = {sample_weights.max():.3f}")
     print(f"mean = {sample_weights.mean():.3f}")
 
-    # -----------------------------------
-    # SCALE
-    # -----------------------------------
 
     x_scaler = StandardScaler()
-
     y_scaler = StandardScaler()
-
     X_scaled = x_scaler.fit_transform(X)
-
     y_scaled = y_scaler.fit_transform(y)
 
-    # -----------------------------------
     # SPLIT
-    # -----------------------------------
 
     (
         X_train,
@@ -211,9 +160,6 @@ def train_and_evaluate():
         random_state=42
     )
 
-    # -----------------------------------
-    # DATASETS
-    # -----------------------------------
 
     train_dataset = StellarDataset(
         X_train,
@@ -245,30 +191,19 @@ def train_and_evaluate():
 
     device = (
         "cuda"
+        # remove sometime later, volga is a cpu machine i cant use gpu if i wanted to wtv
         if torch.cuda.is_available()
         else "cpu"
     )
 
     print(f"\nUsing device: {device}")
 
-    # ===================================
-    # BIGGER ANN
-    # ===================================
-    #
-    # 1947 -> 512 -> 256 -> 128 -> 6
-    #
-    # NO DROPOUT
-    #
-    # ===================================
 
     model = StellarANN(
         n_input=X.shape[1],
         n_output=len(label_names)
     ).to(device)
 
-    # -----------------------------------
-    # OPTIMIZER
-    # -----------------------------------
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -276,57 +211,36 @@ def train_and_evaluate():
         weight_decay=1e-5
     )
 
-    # -----------------------------------
-    # LOSS
-    # -----------------------------------
-
     criterion = torch.nn.MSELoss(
         reduction="none"
     )
 
-    # -----------------------------------
     # EARLY STOPPING
-    # -----------------------------------
 
     best_val = float("inf")
-
     patience = 20
-
     counter = 0
-
     train_losses = []
-
     val_losses = []
 
-    # ===================================
     # TRAIN LOOP
-    # ===================================
 
     print("\nBeginning training...\n")
 
     for epoch in range(100):
 
-        # ------------------------------
         # TRAIN
-        # ------------------------------
 
         model.train()
-
         train_loss = 0
 
         for xb, yb, wb in train_loader:
-
             xb = xb.to(device)
-
             yb = yb.to(device)
-
             wb = wb.to(device)
-
             pred = model(xb)
 
-            # --------------------------
             # WEIGHTED MSE
-            # --------------------------
 
             loss_per_sample = criterion(
                 pred,
@@ -338,35 +252,23 @@ def train_and_evaluate():
             ).mean()
 
             optimizer.zero_grad()
-
             weighted_loss.backward()
-
             optimizer.step()
-
             train_loss += weighted_loss.item()
 
         train_loss /= len(train_loader)
-
         train_losses.append(train_loss)
 
-        # ------------------------------
         # VALIDATION
-        # ------------------------------
 
         model.eval()
-
         val_loss = 0
 
         with torch.no_grad():
-
             for xb, yb, wb in val_loader:
-
                 xb = xb.to(device)
-
                 yb = yb.to(device)
-
                 wb = wb.to(device)
-
                 pred = model(xb)
 
                 loss_per_sample = criterion(
@@ -381,7 +283,6 @@ def train_and_evaluate():
                 val_loss += weighted_loss.item()
 
         val_loss /= len(val_loader)
-
         val_losses.append(val_loss)
 
         print(
@@ -390,14 +291,10 @@ def train_and_evaluate():
             f"Val {val_loss:.5f}"
         )
 
-        # ------------------------------
         # SAVE BEST MODEL
-        # ------------------------------
 
         if val_loss < best_val:
-
             best_val = val_loss
-
             counter = 0
 
             torch.save(
@@ -416,18 +313,12 @@ def train_and_evaluate():
             )
 
         else:
-
             counter += 1
-
             if counter >= patience:
-
                 print("\nEarly stopping triggered.")
-
                 break
 
-    # ===================================
     # TEST EVALUATION
-    # ===================================
 
     print("\nLoading best model...")
 
